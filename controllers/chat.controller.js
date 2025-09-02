@@ -46,7 +46,7 @@ const createChat = async (req, res) => {
             headers: {
                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
                 'Content-Type': 'application/json',
-                'HTTP-Referer': 'http://localhost:3002',
+                'HTTP-Referer': process.env.HTTP_REFERER || process.env.FRONTEND_URL,
                 'X-Title': 'Kalp AI Assistant'
             },
             body: JSON.stringify(chatFormat)
@@ -139,7 +139,7 @@ const createConversation = async (req, res) => {
             headers: {
                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
                 'Content-Type': 'application/json',
-                'HTTP-Referer': 'http://localhost:3002',
+                'HTTP-Referer': process.env.HTTP_REFERER || process.env.FRONTEND_URL,
                 'X-Title': 'Kalp AI Assistant'
             },
             body: JSON.stringify(chatFormat)
@@ -198,7 +198,7 @@ const getAvailableModels = async (req, res) => {
     }
 
     try {
-        const response = await fetch('https://openrouter.ai/api/v1/models', {
+        const response = await fetch(process.env.OPENROUTER_MODELS_URL, {
             method: 'GET',
             headers: {
                 'Authorization': `Bearer ${OPENROUTER_API_KEY}`,

@@ -426,7 +426,7 @@ async function getAIResponse(prompt, userPreferences = {}) {
     // Dynamic import for node-fetch
     const fetch = (await import('node-fetch')).default;
     
-    const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const response = await fetch(process.env.OPENROUTER_URL, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,

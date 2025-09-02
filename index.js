@@ -1,4 +1,14 @@
 require('dotenv').config();
+
+// Debug environment variables loading
+console.log('🔧 Environment Debug:');
+console.log('   NODE_ENV:', process.env.NODE_ENV);
+console.log('   PORT:', process.env.PORT);
+console.log('   MODEL:', process.env.MODEL);
+console.log('   MONGODB_URI exists:', !!process.env.MONGODB_URI);
+console.log('   MONGODB_URI preview:', process.env.MONGODB_URI ? process.env.MONGODB_URI.substring(0, 30) + '...' : 'undefined');
+console.log('');
+
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -36,12 +46,12 @@ async function callAIAPI(message, context) {
         presence_penalty: 0.1
     };
 
-    const response = await fetch(process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1/chat/completions', {
+    const response = await fetch(process.env.OPENROUTER_URL, {
         method: 'POST',
         headers: {
             'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
             'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://kalp.ai',
+            'HTTP-Referer': process.env.HTTP_REFERER || process.env.FRONTEND_URL,
             'X-Title': 'Kalp AI Chat'
         },
         body: JSON.stringify(requestBody)
@@ -115,20 +125,26 @@ connectDB();
 
 const app = express();
 const server = http.createServer(app);
+
+// Parse CORS origins from environment variable
+const corsOrigins = process.env.CORS_ORIGINS 
+    ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
 const io = socketIo(server, {
     cors: {
-        origin: ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:3001", "http://127.0.0.1:3001"],
+        origin: corsOrigins,
         methods: ["GET", "POST"]
     }
 });
 
-const port = process.env.PORT || 3002;
+const port = process.env.PORT || 5000;
 
 app.use(express.json()); // Middleware to parse JSON
 
 // Add CORS middleware for frontend integration
 app.use(cors({
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:3001', 'http://127.0.0.1:3001'],
+    origin: corsOrigins,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
     credentials: true
@@ -507,7 +523,9 @@ io.on('connection', (socket) => {
 });
 
 server.listen(port, () => {
-    console.log(`Server is running on http://localhost:${port}`);
+    const host = process.env.SERVER_HOST || 'localhost';
+    console.log(`Server is running on http://${host}:${port}`);
     console.log(`Using model: ${process.env.MODEL}`);
     console.log('WebSocket server is ready for real-time chat!');
+    console.log(`CORS origins: ${corsOrigins.join(', ')}`);
 });
