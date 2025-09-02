@@ -129,7 +129,7 @@ const server = http.createServer(app);
 // Parse CORS origins from environment variable
 const corsOrigins = process.env.CORS_ORIGINS 
     ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+    : ['http://localhost:3000', 'http://127.0.0.1:3000','https://kalp-jade.vercel.app'];
 
 const io = socketIo(server, {
     cors: {
