@@ -126,6 +126,8 @@ console.log('🌐 CORS_ORIGINS environment variable:', process.env.CORS_ORIGINS)
 console.log('🌐 CORS Origins configured:', corsOrigins);
 console.log('🌐 NODE_ENV:', process.env.NODE_ENV);
 
+console.log('🌐 CORS Origins configured:', corsOrigins);
+
 const io = socketIo(server, {
     cors: {
         origin: corsOrigins,
@@ -522,4 +524,8 @@ server.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
     console.log(`Using model: ${process.env.MODEL}`);
     console.log('WebSocket server is ready for real-time chat!');
+<<<<<<< HEAD
 });
+=======
+});
+>>>>>>> 581a183213fa4acb869eabde513197b56d0e1e49
