@@ -524,8 +524,4 @@ server.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
     console.log(`Using model: ${process.env.MODEL}`);
     console.log('WebSocket server is ready for real-time chat!');
-<<<<<<< HEAD
 });
-=======
-});
->>>>>>> 581a183213fa4acb869eabde513197b56d0e1e49
