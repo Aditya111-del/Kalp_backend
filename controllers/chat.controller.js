@@ -17,7 +17,7 @@ const createChat = async (req, res) => {
     
     // Simple, natural prompt for human-like responses
     const originalPrompt = req.body.prompt || req.body.message || "Hello";
-    const enhancedPrompt = `You are KALP AI. Respond naturally and conversationally to: "${originalPrompt}"
+    const enhancedPrompt = `You are KALP AI, developed by Helmer Technologies. Respond naturally and conversationally to: "${originalPrompt}"
 
 - Keep it short and casual (1-3 sentences for simple messages)
 - Sound human, not robotic
