@@ -25,14 +25,21 @@ async function callAIAPI(message, context) {
     const messages = buildMessageHistory(message, context);
 
     const primaryModel = process.env.MODEL || 'qwen/qwen3-coder:free';
-    const fallbackModel = process.env.FALLBACK_MODEL;
+    const fallbackModelRaw = (process.env.FALLBACK_MODEL || '').trim();
+    const deprecatedFallbackModels = new Set(['qwen/qwen-2-7b-instruct:free']);
+    const fallbackModel = deprecatedFallbackModels.has(fallbackModelRaw) ? '' : fallbackModelRaw;
     const modelsToTry = [primaryModel];
+
+    if (fallbackModelRaw && !fallbackModel) {
+        console.warn(`Ignoring deprecated FALLBACK_MODEL value: ${fallbackModelRaw}`);
+    }
 
     if (fallbackModel && fallbackModel !== primaryModel) {
         modelsToTry.push(fallbackModel);
     }
 
     let lastError = null;
+    let primaryError = null;
 
     for (let i = 0; i < modelsToTry.length; i++) {
         const selectedModel = modelsToTry[i];
@@ -78,9 +85,18 @@ async function callAIAPI(message, context) {
         const isRateLimit = response.status === 429;
         const hasNextModel = i < modelsToTry.length - 1;
 
+        if (!primaryError) {
+            primaryError = new Error(`AI API Error: ${response.status} - ${errorData}`);
+        }
+
         if (isRateLimit && hasNextModel) {
             console.warn(`Model ${selectedModel} is rate-limited. Retrying with fallback model ${modelsToTry[i + 1]}.`);
             continue;
+        }
+
+        if (response.status === 404 && selectedModel !== primaryModel && primaryError) {
+            lastError = primaryError;
+            break;
         }
 
         lastError = new Error(`AI API Error: ${response.status} - ${errorData}`);
