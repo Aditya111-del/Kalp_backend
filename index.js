@@ -24,46 +24,70 @@ async function callAIAPI(message, context) {
     const systemPrompt = buildSystemPrompt(context);
     const messages = buildMessageHistory(message, context);
 
-    const requestBody = {
-        model: process.env.MODEL || 'qwen/qwen3-235b-a22b:free',
-        messages: [
-            { role: 'system', content: systemPrompt },
-            ...messages
-        ],
-        temperature: 0.7,
-        max_tokens: 2000,
-        top_p: 0.9,
-        frequency_penalty: 0.1,
-        presence_penalty: 0.1
-    };
+    const primaryModel = process.env.MODEL || 'qwen/qwen3-coder:free';
+    const fallbackModel = process.env.FALLBACK_MODEL || 'qwen/qwen-2-7b-instruct:free';
+    const modelsToTry = [primaryModel];
 
-    const response = await fetch(process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': 'https://kalp.ai',
-            'X-Title': 'Kalp AI Chat'
-        },
-        body: JSON.stringify(requestBody)
-    });
+    if (fallbackModel && fallbackModel !== primaryModel) {
+        modelsToTry.push(fallbackModel);
+    }
 
-    if (!response.ok) {
+    let lastError = null;
+
+    for (let i = 0; i < modelsToTry.length; i++) {
+        const selectedModel = modelsToTry[i];
+        const requestBody = {
+            model: selectedModel,
+            messages: [
+                { role: 'system', content: systemPrompt },
+                ...messages
+            ],
+            temperature: 0.7,
+            max_tokens: 2000,
+            top_p: 0.9,
+            frequency_penalty: 0.1,
+            presence_penalty: 0.1
+        };
+
+        const response = await fetch(process.env.OPENROUTER_URL || 'https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+                'Content-Type': 'application/json',
+                'HTTP-Referer': 'https://kalp.ai',
+                'X-Title': 'Kalp AI Chat'
+            },
+            body: JSON.stringify(requestBody)
+        });
+
+        if (response.ok) {
+            const data = await response.json();
+
+            if (!data.choices || !data.choices[0]) {
+                throw new Error('Invalid AI response format');
+            }
+
+            return {
+                content: data.choices[0].message.content,
+                model: data.model || selectedModel,
+                usage: data.usage
+            };
+        }
+
         const errorData = await response.text();
-        throw new Error(`AI API Error: ${response.status} - ${errorData}`);
+        const isRateLimit = response.status === 429;
+        const hasNextModel = i < modelsToTry.length - 1;
+
+        if (isRateLimit && hasNextModel) {
+            console.warn(`Model ${selectedModel} is rate-limited. Retrying with fallback model ${modelsToTry[i + 1]}.`);
+            continue;
+        }
+
+        lastError = new Error(`AI API Error: ${response.status} - ${errorData}`);
+        break;
     }
 
-    const data = await response.json();
-    
-    if (!data.choices || !data.choices[0]) {
-        throw new Error('Invalid AI response format');
-    }
-
-    return {
-        content: data.choices[0].message.content,
-        model: data.model,
-        usage: data.usage
-    };
+    throw lastError || new Error('AI API Error: All configured models failed');
 }
 
 function buildSystemPrompt(context) {
