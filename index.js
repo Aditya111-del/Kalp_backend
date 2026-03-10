@@ -25,7 +25,7 @@ async function callAIAPI(message, context) {
     const messages = buildMessageHistory(message, context);
 
     const primaryModel = process.env.MODEL || 'qwen/qwen3-coder:free';
-    const fallbackModel = process.env.FALLBACK_MODEL || 'qwen/qwen-2-7b-instruct:free';
+    const fallbackModel = process.env.FALLBACK_MODEL;
     const modelsToTry = [primaryModel];
 
     if (fallbackModel && fallbackModel !== primaryModel) {
