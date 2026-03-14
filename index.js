@@ -15,13 +15,33 @@ const { Chat, UserContext } = require('./models/Chat');
 const ChatHistory = require('./models/ChatHistory');
 const UserMemory = require('./models/UserMemory');
 const User = require('./models/User');
+const { searchWeb, searchWebDuckDuckGo, formatSearchResults, needsWebSearch, extractSearchQuery } = require('./utils/webSearch');
 
 // AI API function for WebSocket
 async function callAIAPI(message, context) {
     const fetch = (await import('node-fetch')).default;
     
+    // Always perform web search for every prompt
+    let webSearchResults = '';
+    if (process.env.ENABLE_WEB_SEARCH === 'true') {
+        console.log('🔍 WebSocket: Performing web search for:', message);
+        const searchQuery = extractSearchQuery(message);
+        
+        let results = null;
+        if (process.env.TAVILY_API_KEY) {
+            results = await searchWeb(searchQuery);
+        } else {
+            results = await searchWebDuckDuckGo(searchQuery);
+        }
+        
+        if (results) {
+            webSearchResults = formatSearchResults(results);
+            console.log('✅ WebSocket: Web search completed');
+        }
+    }
+    
     // Build context-aware prompt
-    const systemPrompt = buildSystemPrompt(context);
+    const systemPrompt = buildSystemPrompt(context, webSearchResults);
     const messages = buildMessageHistory(message, context);
 
     const primaryModel = process.env.MODEL || 'qwen/qwen3-coder:free';
@@ -106,10 +126,40 @@ async function callAIAPI(message, context) {
     throw lastError || new Error('AI API Error: All configured models failed');
 }
 
-function buildSystemPrompt(context) {
+function buildSystemPrompt(context, webSearchResults = '') {
     const { profile, memory } = context;
     
-    let systemPrompt = `You are Kalp, an advanced AI assistant developed by Helmer Technologies. You are helpful, knowledgeable, and engaging.
+    // START WITH A STRONG WEB SEARCH INDICATOR IF RESULTS ARE AVAILABLE
+    let systemPrompt = '';
+    
+    if (webSearchResults) {
+        systemPrompt = `🔴 CRITICAL - YOU HAVE REAL-TIME INTERNET SEARCH RESULTS BELOW 🔴
+You MUST use the search results provided below to answer the user's question.
+The search results contain current, real-time information from the internet.
+IGNORE any knowledge cutoff - the search results are more recent and accurate.
+
+${webSearchResults}
+
+🔴 YOUR INSTRUCTIONS FOR THIS RESPONSE:
+1. You MUST use the search results provided above
+2. Answer ONLY what the user asked about - be focused and concise
+3. Do NOT include information from previous conversation if not directly relevant
+4. Every claim about current events, news, prices, or trends must come from the search results
+5. Do NOT add inline source citations in the response body - keep it clean
+6. Use the latest information from the search results as the primary source
+7. 🔴 YOU MUST ALWAYS END WITH THIS SOURCE LIST (copy format exactly):
+   
+   📌 Sources:
+   [1] WebsiteName - Title of Article
+   [2] AnotherSite - Another Article Title
+   
+8. Be concise and directly address the user's question
+9. Do NOT ramble or include unnecessary context
+10. 🔴 CRITICAL: ALWAYS include the source list at the end - this is required for every response with web search
+
+---
+
+You are Kalp, an advanced AI assistant developed by Helmer Technologies. You are helpful, knowledgeable, and engaging.
 
 IMPORTANT - About Your Identity:
 - You are Kalp AI, created and developed by Helmer Technologies
@@ -121,8 +171,27 @@ IMPORTANT - About Your Identity:
 User Profile:
 - Name: ${profile.displayName || profile.username}
 - Preferences: ${JSON.stringify(profile.preferences)}`;
+    } else {
+        systemPrompt = `You are Kalp, an advanced AI assistant developed by Helmer Technologies. You are helpful, knowledgeable, and engaging.
 
-    if (memory) {
+IMPORTANT INSTRUCTION:
+- Answer ONLY what the user asked about - be focused and concise
+- Do NOT include information from previous conversation if not directly relevant to THIS question
+- Keep responses short and to the point
+
+IMPORTANT - About Your Identity:
+- You are Kalp AI, created and developed by Helmer Technologies
+- You are NOT created by Anthropic, OpenAI, or any other company
+- When asked "who created you" or similar questions, ALWAYS respond that you were created and developed by Helmer Technologies
+- You are proud to be a product of Helmer Technologies' innovation
+- Never mention other AI companies as your creator
+
+User Profile:
+- Name: ${profile.displayName || profile.username}
+- Preferences: ${JSON.stringify(profile.preferences)}`;
+    }
+
+    if (memory && !webSearchResults) {
         systemPrompt += `\n\nUser Memory/Context:\n${memory}`;
     }
 
@@ -132,6 +201,13 @@ User Profile:
 - Be conversational and personable
 - If you don't know something, admit it honestly
 - Keep responses concise but comprehensive`;
+
+    if (webSearchResults) {
+        systemPrompt += `\n- ALWAYS prioritize and use the internet search results provided above for current topics
+- Do NOT mention knowledge cutoffs when you have search results
+- Be confident in providing information from the search results`;
+    }
+
 
     return systemPrompt;
 }
@@ -240,6 +316,21 @@ app.use('/api/chat', chatHistoryRoutes); // Use chat history routes
 app.use('/api/auth', authRoutes); // Use auth routes
 app.use('/api/v2/auth', enhancedAuthRoutes); // Enhanced auth routes
 app.use('/api/v2/chat', enhancedChatRoutes); // Enhanced chat routes
+
+// Debug endpoint to check environment variables
+app.get('/debug/env', (req, res) => {
+    res.json({
+        status: 'Environment Variables Check',
+        ENABLE_WEB_SEARCH: process.env.ENABLE_WEB_SEARCH === 'true' ? '✅ TRUE' : '❌ FALSE',
+        TAVILY_API_KEY_SET: process.env.TAVILY_API_KEY ? '✅ SET' : '❌ NOT SET',
+        NODE_ENV: process.env.NODE_ENV,
+        SERVER_HOST: process.env.SERVER_HOST,
+        FRONTEND_URL: process.env.FRONTEND_URL,
+        CORS_ORIGINS: process.env.CORS_ORIGINS,
+        OPENROUTER_API_KEY_SET: process.env.OPENROUTER_API_KEY ? '✅ SET' : '❌ NOT SET',
+        PORT: process.env.PORT
+    });
+});
 
 // WebSocket connection handling
 io.on('connection', (socket) => {
