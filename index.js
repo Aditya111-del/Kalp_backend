@@ -666,5 +666,8 @@ io.on('connection', (socket) => {
 server.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
     console.log(`Using model: ${process.env.MODEL}`);
+    console.log(`🔍 WEB SEARCH STATUS: ${process.env.ENABLE_WEB_SEARCH === 'true' ? '✅ ENABLED' : '❌ DISABLED'}`);
+    console.log(`🔍 TAVILY_API_KEY configured: ${process.env.TAVILY_API_KEY ? '✅ YES' : '❌ NO'}`);
+    console.log(`🔍 Environment: NODE_ENV=${process.env.NODE_ENV}`);
     console.log('WebSocket server is ready for real-time chat!');
 });
