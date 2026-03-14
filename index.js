@@ -317,6 +317,11 @@ app.use('/api/auth', authRoutes); // Use auth routes
 app.use('/api/v2/auth', enhancedAuthRoutes); // Enhanced auth routes
 app.use('/api/v2/chat', enhancedChatRoutes); // Enhanced chat routes
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.json({ status: 'OK', message: 'Backend is running' });
+});
+
 // Debug endpoint to check environment variables
 app.get('/debug/env', (req, res) => {
     res.json({
