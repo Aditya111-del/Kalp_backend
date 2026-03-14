@@ -3,14 +3,15 @@ const ChatHistory = require('../models/ChatHistory');
 const UserMemory = require('../models/UserMemory');
 const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
+const { searchWeb, searchWebDuckDuckGo, needsWebSearch, extractSearchQuery, formatSearchResults } = require('../utils/webSearch');
 
-// Send message with full context - COMPLETE USER ISOLATION
+// Send message with full context - STREAMING VERSION for real-time responses
 const sendMessage = async (req, res) => {
   try {
     const { message, sessionId } = req.body;
     const userId = req.userId;
 
-    console.log(`=== PROCESSING MESSAGE FOR USER ${userId} ===`);
+    console.log(`=== PROCESSING STREAM MESSAGE FOR USER ${userId} ===`);
     console.log(`User ID: ${userId}, Session: ${sessionId}, Message: ${message?.substring(0, 50)}...`);
 
     // Validate input
@@ -74,30 +75,84 @@ const sendMessage = async (req, res) => {
     // Update user memory with new topics for THIS user only
     await updateUserMemoryFromMessage(userId, message);
 
+    // Web Search: Always perform web search for every message to get latest info
+    let webSearchResults = '';
+    console.log(`📋 Performing web search for every message: "${message}"`);
+    console.log(`📋 ENABLE_WEB_SEARCH: ${process.env.ENABLE_WEB_SEARCH}`);
+    
+    if (process.env.ENABLE_WEB_SEARCH === 'true') {
+      console.log('🔍 Performing web search for current information...');
+      
+      const searchQuery = extractSearchQuery(message);
+      console.log(`🔍 Extracted search query: "${searchQuery}"`);
+      
+      // Try Tavily API first, fallback to DuckDuckGo
+      let results = null;
+      if (process.env.TAVILY_API_KEY) {
+        console.log('🔍 Using Tavily API for web search...');
+        results = await searchWeb(searchQuery);
+      } else {
+        console.log('ℹ️ TAVILY_API_KEY not set, using DuckDuckGo (free) fallback');
+        results = await searchWebDuckDuckGo(searchQuery);
+      }
+      
+      if (results) {
+        console.log('🔍 Search results received, formatting...');
+        const formattedResults = formatSearchResults(results);
+        webSearchResults = `\n\n[INTERNET SEARCH RESULTS FOR "${message}"]:\n${formattedResults}\n`;
+        console.log('✅ Web search completed successfully');
+        console.log('📝 Formatted results:', webSearchResults.substring(0, 200));
+      } else {
+        console.log('⚠️ Web search returned no results');
+      }
+    } else {
+      console.log('⏭️ Skipping web search (not needed or disabled)');
+    }
+
     // Build AI prompt with user-specific context
-    const aiPrompt = buildContextualPrompt(message, context);
+    const aiPrompt = buildContextualPrompt(message, context, webSearchResults);
 
-    // Get AI response
-    const aiResponse = await getAIResponse(aiPrompt, user.preferences);
+    // Set up Server-Sent Events for streaming
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // Save AI response to history with STRICT user association
+    let fullContent = '';
+    let tokenCount = 0;
+    const startTime = Date.now();
+
+    // Get streaming AI response
+    await getAIResponseStream(aiPrompt, user.preferences, (chunk) => {
+      fullContent += chunk;
+      res.write(`data: ${JSON.stringify({ 
+        type: 'chunk',
+        content: chunk,
+        sessionId: currentSessionId
+      })}\n\n`);
+    });
+
+    const processingTime = Date.now() - startTime;
+
+    // Save complete AI response to history with STRICT user association
     const assistantMessage = new ChatHistory({
       userId: userId, // CRITICAL: Ensure correct user ID
       sessionId: currentSessionId,
       role: 'assistant',
-      message: aiResponse.content,
+      message: fullContent,
       messageType: 'text',
       metadata: {
-        model: aiResponse.model || process.env.MODEL,
-        temperature: aiResponse.temperature,
-        processingTime: aiResponse.processingTime,
-        tokenCount: aiResponse.tokenCount
+        model: process.env.MODEL || 'meta-llama/llama-3.1-8b-instruct:free',
+        temperature: user.preferences?.temperature || 0.7,
+        processingTime: processingTime,
+        tokenCount: tokenCount,
+        isStreamed: true
       },
       timestamp: new Date()
     });
 
     await assistantMessage.save();
-    console.log(`Saved AI response for ${userId} in session ${currentSessionId}`);
+    console.log(`Saved streamed AI response for ${userId} in session ${currentSessionId}`);
 
     // Update user usage for THIS specific user
     await user.incrementUsage();
@@ -105,30 +160,27 @@ const sendMessage = async (req, res) => {
     // Update user memory summary if needed for THIS user
     await updateUserMemorySummary(userId);
 
-    console.log(`=== COMPLETED MESSAGE PROCESSING FOR USER ${userId} ===`);
+    console.log(`=== COMPLETED STREAM MESSAGE PROCESSING FOR USER ${userId} ===`);
 
-    res.json({
-      success: true,
+    // Send completion signal
+    res.write(`data: ${JSON.stringify({ 
+      type: 'complete',
       sessionId: currentSessionId,
-      message: aiResponse.content,
-      context: {
-        hasContext: context.memory.summary.length > 0,
-        recentMessages: context.recentMessages.length,
-        keyTopics: context.memory.keyTopics.slice(0, 3)
-      },
       usage: {
         messagesThisMonth: user.usage.messagesThisMonth + 1,
         canContinue: user.usage.messagesThisMonth + 1 < (user.plan === 'free' ? 100 : user.plan === 'premium' ? 1000 : Infinity)
       }
-    });
+    })}\n\n`);
+    res.end();
 
   } catch (error) {
     console.error(`Send message error for user ${req.userId}:`, error);
-    res.status(500).json({
-      success: false,
+    res.write(`data: ${JSON.stringify({ 
+      type: 'error',
       message: 'Failed to process message',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    })}\n\n`);
+    res.end();
   }
 };
 
@@ -366,7 +418,7 @@ async function buildUserContext(userId, sessionId) {
 }
 
 // Build contextual prompt for AI - ENSURE USER ISOLATION
-function buildContextualPrompt(message, context) {
+function buildContextualPrompt(message, context, webSearchResults = '') {
   // CRITICAL: Validate that we have the correct user context
   if (!context.profile.userId) {
     console.error('WARNING: No user ID in context - potential data leak!');
@@ -404,16 +456,40 @@ ${context.memory.summary}\n`;
     });
   }
 
+  // Add web search results if available
+  if (webSearchResults) {
+    prompt += webSearchResults;
+  }
+
   // Add current message
   prompt += `\nCurrent Message from ${context.profile.username}: ${message}\n`;
 
-  // Add strict instructions
+  // Add strict instructions with web search awareness
   prompt += `\nSTRICT INSTRUCTIONS:
 - You are responding ONLY to User ID: ${context.profile.userId} (${context.profile.username})
 - Use ONLY the context provided above for this specific user
 - Do NOT reference any information from other users
-- Respond naturally and helpfully, incorporating this user's specific context and preferences
-- Be personalized but maintain appropriate boundaries`;
+- ⭐ MOST IMPORTANT: Answer ONLY what the user asked about - be focused and concise
+- Do NOT include information from previous conversation if not directly relevant to THIS question
+- Keep responses short and to the point`;
+
+  if (webSearchResults) {
+    prompt += `\n- 🔴 CRITICAL: You have CURRENT INTERNET SEARCH RESULTS below - USE THEM
+- Always prioritize search results over training knowledge for current information
+- Do NOT add inline source citations in response body
+- 🔴 YOU MUST ALWAYS END WITH SOURCE LIST in this exact format:
+
+📌 Sources:
+[1] DomainName - Article Title
+[2] AnotherDomain - Another Article Title
+
+- Copy the exact format with emoji, domain, dash, and title
+- This is REQUIRED for every response with search results`;
+  } else {
+    prompt += `\n- Respond based on your training knowledge and user context`;
+  }
+
+  prompt += `\n- Respond naturally and helpfully`;
 
   return prompt;
 }
@@ -477,6 +553,98 @@ CRITICAL IDENTITY: You are NOT created by Anthropic, OpenAI, or any other compan
       processingTime: Date.now() - startTime,
       tokenCount: 0
     };
+  }
+}
+
+// Get streaming AI response from OpenRouter
+async function getAIResponseStream(prompt, userPreferences = {}, onChunk) {
+  try {
+    // Dynamic import for node-fetch
+    const fetch = (await import('node-fetch')).default;
+    
+    const response = await fetch(process.env.OPENROUTER_URL, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'X-Title': 'Kalp AI Assistant'
+      },
+      body: JSON.stringify({
+        model: process.env.MODEL || 'meta-llama/llama-3.1-8b-instruct:free',
+        messages: [
+          {
+            role: 'system',
+            content: `You are Kalp, an intelligent AI assistant developed by Helmer Technologies. You provide helpful, accurate, and contextual responses. Always be respectful and maintain the user's preferred communication style. 
+
+CRITICAL IDENTITY: You are NOT created by Anthropic, OpenAI, or any other company. You were created and developed exclusively by Helmer Technologies. When asked "who created you" or about your creator/developer, ALWAYS respond that you were created by Helmer Technologies, never mention other AI companies.`
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: userPreferences.temperature || 0.7,
+        max_tokens: userPreferences.maxTokens || 2000,
+        stream: true
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`OpenRouter API error: ${response.status} ${response.statusText}`);
+    }
+
+    // Process streaming response
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      
+      // Keep the last incomplete line in the buffer
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6);
+          
+          // Skip heartbeat messages
+          if (data === '[DONE]') continue;
+          
+          try {
+            const parsed = JSON.parse(data);
+            const chunk = parsed.choices?.[0]?.delta?.content;
+            if (chunk) {
+              onChunk(chunk);
+            }
+          } catch (e) {
+            // Ignore JSON parsing errors for malformed lines
+          }
+        }
+      }
+    }
+
+    // Process any remaining data in buffer
+    if (buffer.trim().startsWith('data: ')) {
+      const data = buffer.slice(6);
+      try {
+        const parsed = JSON.parse(data);
+        const chunk = parsed.choices?.[0]?.delta?.content;
+        if (chunk) {
+          onChunk(chunk);
+        }
+      } catch (e) {
+        // Ignore JSON parsing errors
+      }
+    }
+
+  } catch (error) {
+    console.error('AI streaming response error:', error);
+    onChunk('I apologize, but I encountered an error while processing your request. Please try again in a moment.');
   }
 }
 

@@ -5,8 +5,7 @@ const userMemorySchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   summary: {
     type: String,
@@ -66,7 +65,6 @@ const userMemorySchema = new mongoose.Schema({
 });
 
 // Index for efficient lookups
-userMemorySchema.index({ userId: 1 });
 userMemorySchema.index({ 'keyTopics.topic': 1 });
 userMemorySchema.index({ updatedAt: -1 });
 
