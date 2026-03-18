@@ -207,6 +207,33 @@ const googleAuth = async (req, res) => {
         user.googleId = googleId;
         user.displayName = displayName;
         user.avatar = avatar || user.avatar;
+        
+        // Ensure user has a username
+        if (!user.username) {
+          let username;
+          let isUsernameUnique = false;
+          let attempts = 0;
+          const maxAttempts = 10;
+
+          while (!isUsernameUnique && attempts < maxAttempts) {
+            const baseUsername = email.split('@')[0];
+            const randomSuffix = Math.random().toString(36).substring(2, 9);
+            username = baseUsername.slice(0, 15) + '_' + randomSuffix;
+            const existingUser = await User.findOne({ username });
+            if (!existingUser) {
+              isUsernameUnique = true;
+            }
+            attempts++;
+          }
+
+          if (!isUsernameUnique) {
+            const emailHash = require('crypto').createHash('md5').update(email + Date.now()).digest('hex').substring(0, 8);
+            username = 'user_' + emailHash;
+          }
+
+          user.username = username;
+        }
+        
         await user.save();
       } else {
         // Create new user with guaranteed unique username
@@ -262,6 +289,33 @@ const googleAuth = async (req, res) => {
       user.displayName = displayName.trim();
       user.email = email.toLowerCase().trim();
       user.avatar = avatar || user.avatar;
+      
+      // Ensure user has a username
+      if (!user.username) {
+        let username;
+        let isUsernameUnique = false;
+        let attempts = 0;
+        const maxAttempts = 10;
+
+        while (!isUsernameUnique && attempts < maxAttempts) {
+          const baseUsername = email.split('@')[0];
+          const randomSuffix = Math.random().toString(36).substring(2, 9);
+          username = baseUsername.slice(0, 15) + '_' + randomSuffix;
+          const existingUser = await User.findOne({ username });
+          if (!existingUser) {
+            isUsernameUnique = true;
+          }
+          attempts++;
+        }
+
+        if (!isUsernameUnique) {
+          const emailHash = require('crypto').createHash('md5').update(email + Date.now()).digest('hex').substring(0, 8);
+          username = 'user_' + emailHash;
+        }
+
+        user.username = username;
+      }
+      
       await user.save();
     }
 
