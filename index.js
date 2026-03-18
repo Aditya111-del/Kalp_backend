@@ -241,19 +241,21 @@ const app = express();
 const server = http.createServer(app);
 
 // Parse CORS origins from environment variable
+const defaultOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://kalp-jade.vercel.app'];
 const corsOrigins = process.env.CORS_ORIGINS 
-    ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
-    : ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://kalp-jade.vercel.app'];
+    ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim()).concat(defaultOrigins)
+    : defaultOrigins;
+
+// Remove duplicates
+const uniqueCorsOrigins = [...new Set(corsOrigins)];
 
 console.log('🌐 CORS_ORIGINS environment variable:', process.env.CORS_ORIGINS);
-console.log('🌐 CORS Origins configured:', corsOrigins);
+console.log('🌐 CORS Origins configured:', uniqueCorsOrigins);
 console.log('🌐 NODE_ENV:', process.env.NODE_ENV);
-
-console.log('🌐 CORS Origins configured:', corsOrigins);
 
 const io = socketIo(server, {
     cors: {
-        origin: corsOrigins,
+        origin: uniqueCorsOrigins,
         methods: ["GET", "POST"],
         credentials: true
     }
@@ -265,10 +267,32 @@ app.use(express.json()); // Middleware to parse JSON
 
 // Add CORS middleware for frontend integration
 app.use(cors({
-    origin: corsOrigins,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    origin: function (origin, callback) {
+        if (!origin || uniqueCorsOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            console.warn('⚠️  CORS rejected origin:', origin);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
-    credentials: true
+    credentials: true,
+    preflightContinue: false,
+    optionsSuccessStatus: 200
+}));
+
+// Explicit preflight handler
+app.options('*', cors({
+    origin: function (origin, callback) {
+        if (!origin || uniqueCorsOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    optionsSuccessStatus: 200
 }));
 
 app.get('/', (req, res) => {
