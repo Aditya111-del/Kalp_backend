@@ -209,8 +209,31 @@ const googleAuth = async (req, res) => {
         user.avatar = avatar || user.avatar;
         await user.save();
       } else {
-        // Create new user
-        const username = email.split('@')[0] + Math.floor(Math.random() * 1000);
+        // Create new user with guaranteed unique username
+        let username;
+        let isUsernameUnique = false;
+        let attempts = 0;
+        const maxAttempts = 10;
+
+        // Try to generate a unique username
+        while (!isUsernameUnique && attempts < maxAttempts) {
+          const baseUsername = email.split('@')[0];
+          const randomSuffix = Math.random().toString(36).substring(2, 9);
+          username = baseUsername.slice(0, 15) + '_' + randomSuffix; // Ensure under 30 char limit
+          
+          // Check if username is unique
+          const existingUser = await User.findOne({ username });
+          if (!existingUser) {
+            isUsernameUnique = true;
+          }
+          attempts++;
+        }
+
+        // If still not unique after retries, use email hash
+        if (!isUsernameUnique) {
+          const emailHash = require('crypto').createHash('md5').update(email + Date.now()).digest('hex').substring(0, 8);
+          username = 'user_' + emailHash;
+        }
         
         user = new User({
           username,
