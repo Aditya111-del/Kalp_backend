@@ -5,6 +5,59 @@ const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
 const { searchWeb, searchWebDuckDuckGo, needsWebSearch, extractSearchQuery, formatSearchResults } = require('../utils/webSearch');
 
+// Intelligent query analysis - determine if web search is needed
+function shouldPerformWebSearch(query) {
+    if (!query) return false;
+    
+    const lowerQuery = query.toLowerCase().trim();
+    
+    // Never search for these patterns (greetings, casual chat)
+    // Allow for common typos like "hii", "hiii", "helloo", etc.
+    const neverSearchPatterns = [
+        /^h(i|ii|iii|ii+|e|el+o|ey|iii+)(!|\?)?$/i,  // hi, hii, hello, hey variations
+        /^(thanks|thank you|thnx|ty|thx|thankyou)(!)?$/i,
+        /^(ok|okay|ok!|got it|sure|cool|nice|awesome|great|lol|haha|hehe)(!)?$/i,
+        /^(bye|goodbye|see you|later|cya|farewell|gotta go)(!)?$/i,
+        /^(yes|yep|no|nope|yeah|nah|yup|yup!)(!)?$/i,
+        /^(what'?s up|how are you|how you doing|how's it|sup)(\?)?(!)?$/i,
+        /^(k|ok|kk|lol|rofl|omg|wow|nice|cool)(!)?$/i, // Short responses
+    ];
+    
+    for (const pattern of neverSearchPatterns) {
+        if (pattern.test(lowerQuery)) return false;
+    }
+    
+    // Very short queries (under 12 chars) without question marks - likely casual
+    if (lowerQuery.length < 12 && !lowerQuery.includes('?')) {
+        // Unless it has specific search keywords
+        if (!/news|latest|current|today|now|update|weather|price|stock|covid|war|live|breaking|who|which|where|when|what/i.test(lowerQuery)) {
+            return false;
+        }
+    }
+    
+    // Always search for these keywords (news, current events, facts, etc.)
+    const shouldSearchKeywords = [
+        /news|latest|current|breaking|today|now|update|weather|price|stock|rate|market|covid|pandemic|war|conflict|election|incident|accident|explosion|crash|death|arrest|investigation|government|president|minister|biography/i,
+        /what.*happened|what.*is.*latest|tell.*news|tell.*latest|give.*update|search.*for|find.*about|look.*up|research|who.*is|when.*did/i,
+        /(\d+\s*(years?|months?|days?|weeks?|hours?)\s*ago)|recently|yesterday|tomorrow|this (week|month|year)|next (week|month|year)/i,
+    ];
+    
+    for (const pattern of shouldSearchKeywords) {
+        if (pattern.test(lowerQuery)) return true;
+    }
+    
+    // Questions usually need search (if not caught above)
+    if (lowerQuery.includes('?')) {
+        // But exclude personal/conversational questions
+        if (!/how.*you|what.*(feel|think|like|want|prefer)|do you|can you|will you|should.*i|can.*i/i.test(lowerQuery)) {
+            return true;
+        }
+    }
+    
+    // Default: no search for casual conversation
+    return false;
+}
+
 // Send message with full context - STREAMING VERSION for real-time responses
 const sendMessage = async (req, res) => {
   try {
@@ -75,12 +128,15 @@ const sendMessage = async (req, res) => {
     // Update user memory with new topics for THIS user only
     await updateUserMemoryFromMessage(userId, message);
 
-    // Web Search: Always perform web search for every message to get latest info
+    // Web Search: Only search when needed based on query analysis
     let webSearchResults = '';
-    console.log(`📋 Performing web search for every message: "${message}"`);
+    
+    // Determine if web search is needed for this query
+    const shouldSearch = shouldPerformWebSearch(message);
+    console.log(`📋 Query analysis: shouldSearch=${shouldSearch}, message="${message}"`);
     console.log(`📋 ENABLE_WEB_SEARCH: ${process.env.ENABLE_WEB_SEARCH}`);
     
-    if (process.env.ENABLE_WEB_SEARCH === 'true') {
+    if (process.env.ENABLE_WEB_SEARCH === 'true' && shouldSearch) {
       console.log('🔍 Performing web search for current information...');
       
       const searchQuery = extractSearchQuery(message);
@@ -106,7 +162,7 @@ const sendMessage = async (req, res) => {
         console.log('⚠️ Web search returned no results');
       }
     } else {
-      console.log('⏭️ Skipping web search (not needed or disabled)');
+      console.log('ℹ️ No web search needed for this query');
     }
 
     // Build AI prompt with user-specific context
@@ -425,34 +481,29 @@ function buildContextualPrompt(message, context, webSearchResults = '') {
     return `Message: ${message}\nInstructions: Respond helpfully but without any personal context.`;
   }
 
-  let prompt = `User Profile:
-- User ID: ${context.profile.userId}
-- Username: ${context.profile.username || 'Unknown'}
-- Display Name: ${context.profile.displayName || context.profile.username || 'User'}
-`;
+  let prompt = `You are Kalp, a helpful AI assistant.
 
-  // Add AI tone preference if available
-  if (context.profile.preferences?.aiTone) {
-    prompt += `- Preferred Communication Style: ${context.profile.preferences.aiTone}\n`;
-  }
+User: ${context.profile.displayName || context.profile.username || 'User'}
 
-  // Add user-specific memory summary
+RESPONSE STYLE:
+- Be natural and conversational - write like a real person, not a robot
+- Keep responses concise unless the user asks for details or it's a research query
+- Show personality without being over the top
+- For casual chats: brief, warm responses (1-2 sentences)
+- For questions: helpful, clear answers
+- For research/news topics: provide accurate information with context
+- Use a friendly, warm tone - no corporate speak`;
+
+  // Add user-specific memory summary if available
   if (context.memory.summary && context.memory.summary.length > 10) {
-    prompt += `\nUser-Specific Context (ID: ${context.profile.userId}):
-${context.memory.summary}\n`;
+    prompt += `\n\nUser Context:\n${context.memory.summary}`;
   }
 
-  // Add user-specific key topics
-  if (context.memory.keyTopics && context.memory.keyTopics.length > 0) {
-    const topics = context.memory.keyTopics.slice(0, 5).map(t => t.topic || t).join(', ');
-    prompt += `\nUser's Key Interests: ${topics}\n`;
-  }
-
-  // Add recent conversation context FROM THIS USER ONLY
+  // Add recent conversation context
   if (context.recentMessages && context.recentMessages.length > 0) {
-    prompt += `\nRecent Conversation History (User ID: ${context.profile.userId}):\n`;
-    context.recentMessages.slice(-5).forEach((msg, index) => {
-      prompt += `${index + 1}. ${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.message}\n`;
+    prompt += `\n\nRecent Conversation:\n`;
+    context.recentMessages.slice(-3).forEach((msg) => {
+      prompt += `${msg.role === 'user' ? 'User' : 'Kalp'}: ${msg.message}\n`;
     });
   }
 
@@ -462,34 +513,7 @@ ${context.memory.summary}\n`;
   }
 
   // Add current message
-  prompt += `\nCurrent Message from ${context.profile.username}: ${message}\n`;
-
-  // Add strict instructions with web search awareness
-  prompt += `\nSTRICT INSTRUCTIONS:
-- You are responding ONLY to User ID: ${context.profile.userId} (${context.profile.username})
-- Use ONLY the context provided above for this specific user
-- Do NOT reference any information from other users
-- ⭐ MOST IMPORTANT: Answer ONLY what the user asked about - be focused and concise
-- Do NOT include information from previous conversation if not directly relevant to THIS question
-- Keep responses short and to the point`;
-
-  if (webSearchResults) {
-    prompt += `\n- 🔴 CRITICAL: You have CURRENT INTERNET SEARCH RESULTS below - USE THEM
-- Always prioritize search results over training knowledge for current information
-- Do NOT add inline source citations in response body
-- 🔴 YOU MUST ALWAYS END WITH SOURCE LIST in this exact format:
-
-📌 Sources:
-[1] DomainName - Article Title
-[2] AnotherDomain - Another Article Title
-
-- Copy the exact format with emoji, domain, dash, and title
-- This is REQUIRED for every response with search results`;
-  } else {
-    prompt += `\n- Respond based on your training knowledge and user context`;
-  }
-
-  prompt += `\n- Respond naturally and helpfully`;
+  prompt += `\nUser: ${message}\n\nRespond naturally and helpfully.`;
 
   return prompt;
 }

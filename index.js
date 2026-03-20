@@ -17,13 +17,68 @@ const UserMemory = require('./models/UserMemory');
 const User = require('./models/User');
 const { searchWeb, searchWebDuckDuckGo, formatSearchResults, needsWebSearch, extractSearchQuery } = require('./utils/webSearch');
 
+// Intelligent query analysis - determine if web search is needed
+function shouldPerformWebSearch(query) {
+    if (!query) return false;
+    
+    const lowerQuery = query.toLowerCase().trim();
+    
+    // Never search for these patterns (greetings, casual chat)
+    // Allow for common typos like "hii", "hiii", "helloo", etc.
+    const neverSearchPatterns = [
+        /^h(i|ii|iii|ii+|e|el+o|ey|iii+)(!|\?)?$/i,  // hi, hii, hello, hey variations
+        /^(thanks|thank you|thnx|ty|thx|thankyou)(!)?$/i,
+        /^(ok|okay|ok!|got it|sure|cool|nice|awesome|great|lol|haha|hehe)(!)?$/i,
+        /^(bye|goodbye|see you|later|cya|farewell|gotta go)(!)?$/i,
+        /^(yes|yep|no|nope|yeah|nah|yup|yup!)(!)?$/i,
+        /^(what'?s up|how are you|how you doing|how's it|sup)(\?)?(!)?$/i,
+        /^(k|ok|kk|lol|rofl|omg|wow|nice|cool)(!)?$/i, // Short responses
+    ];
+    
+    for (const pattern of neverSearchPatterns) {
+        if (pattern.test(lowerQuery)) return false;
+    }
+    
+    // Very short queries (under 12 chars) without question marks - likely casual
+    if (lowerQuery.length < 12 && !lowerQuery.includes('?')) {
+        // Unless it has specific search keywords
+        if (!/news|latest|current|today|now|update|weather|price|stock|covid|war|live|breaking|who|which|where|when|what/i.test(lowerQuery)) {
+            return false;
+        }
+    }
+    
+    // Always search for these keywords (news, current events, facts, etc.)
+    const shouldSearchKeywords = [
+        /news|latest|current|breaking|today|now|update|weather|price|stock|rate|market|covid|pandemic|war|conflict|election|incident|accident|explosion|crash|death|arrest|investigation|government|president|minister|biography/i,
+        /what.*happened|what.*is.*latest|tell.*news|tell.*latest|give.*update|search.*for|find.*about|look.*up|research|who.*is|when.*did/i,
+        /(\d+\s*(years?|months?|days?|weeks?|hours?)\s*ago)|recently|yesterday|tomorrow|this (week|month|year)|next (week|month|year)/i,
+    ];
+    
+    for (const pattern of shouldSearchKeywords) {
+        if (pattern.test(lowerQuery)) return true;
+    }
+    
+    // Questions usually need search (if not caught above)
+    if (lowerQuery.includes('?')) {
+        // But exclude personal/conversational questions
+        if (!/how.*you|what.*(feel|think|like|want|prefer)|do you|can you|will you|should.*i|can.*i/i.test(lowerQuery)) {
+            return true;
+        }
+    }
+    
+    // Default: no search for casual conversation
+    return false;
+}
+
 // AI API function for WebSocket
 async function callAIAPI(message, context) {
     const fetch = (await import('node-fetch')).default;
     
-    // Always perform web search for every prompt
+    // Smart search detection - only search for information queries
     let webSearchResults = '';
-    if (process.env.ENABLE_WEB_SEARCH === 'true') {
+    const shouldSearch = shouldPerformWebSearch(message);
+    
+    if (process.env.ENABLE_WEB_SEARCH === 'true' && shouldSearch) {
         console.log('🔍 WebSocket: Performing web search for:', message);
         const searchQuery = extractSearchQuery(message);
         
@@ -38,6 +93,8 @@ async function callAIAPI(message, context) {
             webSearchResults = formatSearchResults(results);
             console.log('✅ WebSocket: Web search completed');
         }
+    } else {
+        console.log('ℹ️ WebSocket: No web search needed for this query');
     }
     
     // Build context-aware prompt
@@ -129,85 +186,33 @@ async function callAIAPI(message, context) {
 function buildSystemPrompt(context, webSearchResults = '') {
     const { profile, memory } = context;
     
-    // START WITH A STRONG WEB SEARCH INDICATOR IF RESULTS ARE AVAILABLE
-    let systemPrompt = '';
-    
-    if (webSearchResults) {
-        systemPrompt = `🔴 CRITICAL - YOU HAVE REAL-TIME INTERNET SEARCH RESULTS BELOW 🔴
-You MUST use the search results provided below to answer the user's question.
-The search results contain current, real-time information from the internet.
-IGNORE any knowledge cutoff - the search results are more recent and accurate.
+    let systemPrompt = `You are Kalp, an AI assistant created by Helmer Technologies. You're conversational, helpful, and genuinely friendly - like chatting with someone smart who actually wants to help.
 
+IDENTITY: You are Kalp, developed by Helmer Technologies (not Anthropic, OpenAI, or any other company).
+
+RESPONSE STYLE:
+- Be natural and conversational - write like a real person, not a robot
+- Keep responses concise unless asked for details
+- Use a friendly, warm tone
+- Show personality without being over the top
+- For casual chats: brief, warm responses
+- For questions: helpful, clear answers
+- Be genuine - if you don't know something, say so naturally`;
+
+    if (webSearchResults) {
+        systemPrompt += `\n\nCURRENT INFORMATION (from web search):
 ${webSearchResults}
 
-🔴 YOUR INSTRUCTIONS FOR THIS RESPONSE:
-1. You MUST use the search results provided above
-2. Answer ONLY what the user asked about - be focused and concise
-3. Do NOT include information from previous conversation if not directly relevant
-4. Every claim about current events, news, prices, or trends must come from the search results
-5. Do NOT add inline source citations in the response body - keep it clean
-6. Use the latest information from the search results as the primary source
-7. 🔴 YOU MUST ALWAYS END WITH THIS SOURCE LIST (copy format exactly):
-   
-   📌 Sources:
-   [1] WebsiteName - Title of Article
-   [2] AnotherSite - Another Article Title
-   
-8. Be concise and directly address the user's question
-9. Do NOT ramble or include unnecessary context
-10. 🔴 CRITICAL: ALWAYS include the source list at the end - this is required for every response with web search
-
----
-
-You are Kalp, an advanced AI assistant developed by Helmer Technologies. You are helpful, knowledgeable, and engaging.
-
-IMPORTANT - About Your Identity:
-- You are Kalp AI, created and developed by Helmer Technologies
-- You are NOT created by Anthropic, OpenAI, or any other company
-- When asked "who created you" or similar questions, ALWAYS respond that you were created and developed by Helmer Technologies
-- You are proud to be a product of Helmer Technologies' innovation
-- Never mention other AI companies as your creator
-
-User Profile:
-- Name: ${profile.displayName || profile.username}
-- Preferences: ${JSON.stringify(profile.preferences)}`;
-    } else {
-        systemPrompt = `You are Kalp, an advanced AI assistant developed by Helmer Technologies. You are helpful, knowledgeable, and engaging.
-
-IMPORTANT INSTRUCTION:
-- Answer ONLY what the user asked about - be focused and concise
-- Do NOT include information from previous conversation if not directly relevant to THIS question
-- Keep responses short and to the point
-
-IMPORTANT - About Your Identity:
-- You are Kalp AI, created and developed by Helmer Technologies
-- You are NOT created by Anthropic, OpenAI, or any other company
-- When asked "who created you" or similar questions, ALWAYS respond that you were created and developed by Helmer Technologies
-- You are proud to be a product of Helmer Technologies' innovation
-- Never mention other AI companies as your creator
-
-User Profile:
-- Name: ${profile.displayName || profile.username}
-- Preferences: ${JSON.stringify(profile.preferences)}`;
+When responding:
+- Use the search results to answer accurately
+- Integrate the info naturally into your response
+- Don't just repeat the search results back
+- Can mention sources if relevant`;
     }
 
-    if (memory && !webSearchResults) {
-        systemPrompt += `\n\nUser Memory/Context:\n${memory}`;
+    if (memory && memory.trim()) {
+        systemPrompt += `\n\nUser Context: ${memory}`;
     }
-
-    systemPrompt += `\n\nInstructions:
-- Provide helpful, accurate, and engaging responses
-- Remember the user's context and preferences
-- Be conversational and personable
-- If you don't know something, admit it honestly
-- Keep responses concise but comprehensive`;
-
-    if (webSearchResults) {
-        systemPrompt += `\n- ALWAYS prioritize and use the internet search results provided above for current topics
-- Do NOT mention knowledge cutoffs when you have search results
-- Be confident in providing information from the search results`;
-    }
-
 
     return systemPrompt;
 }
@@ -241,21 +246,19 @@ const app = express();
 const server = http.createServer(app);
 
 // Parse CORS origins from environment variable
-const defaultOrigins = ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://kalp-jade.vercel.app'];
 const corsOrigins = process.env.CORS_ORIGINS 
-    ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim()).concat(defaultOrigins)
-    : defaultOrigins;
-
-// Remove duplicates
-const uniqueCorsOrigins = [...new Set(corsOrigins)];
+    ? process.env.CORS_ORIGINS.split(',').map(origin => origin.trim())
+    : ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://kalp-jade.vercel.app'];
 
 console.log('🌐 CORS_ORIGINS environment variable:', process.env.CORS_ORIGINS);
-console.log('🌐 CORS Origins configured:', uniqueCorsOrigins);
+console.log('🌐 CORS Origins configured:', corsOrigins);
 console.log('🌐 NODE_ENV:', process.env.NODE_ENV);
+
+console.log('🌐 CORS Origins configured:', corsOrigins);
 
 const io = socketIo(server, {
     cors: {
-        origin: uniqueCorsOrigins,
+        origin: corsOrigins,
         methods: ["GET", "POST"],
         credentials: true
     }
@@ -267,32 +270,10 @@ app.use(express.json()); // Middleware to parse JSON
 
 // Add CORS middleware for frontend integration
 app.use(cors({
-    origin: function (origin, callback) {
-        if (!origin || uniqueCorsOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            console.warn('⚠️  CORS rejected origin:', origin);
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    origin: corsOrigins,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Origin', 'X-Requested-With', 'Content-Type', 'Accept', 'Authorization'],
-    credentials: true,
-    preflightContinue: false,
-    optionsSuccessStatus: 200
-}));
-
-// Explicit preflight handler
-app.options('*', cors({
-    origin: function (origin, callback) {
-        if (!origin || uniqueCorsOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true,
-    optionsSuccessStatus: 200
+    credentials: true
 }));
 
 app.get('/', (req, res) => {
